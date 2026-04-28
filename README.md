@@ -163,7 +163,82 @@ func main() {
 }
 ```
 
-### 5. fclog — file and console with independent levels and rotation
+### 5. sloglog — capture logs from libraries that use slog
+
+Some third-party libraries emit their logs through Go's standard
+`log/slog` package. `sloglog.NewHandler` bridges the gap: it wraps any
+`logger.Logger` as a `slog.Handler`, so that slog records are forwarded
+to the cwlog backend of your choice.
+
+#### Redirect the global slog logger
+
+```go
+package main
+
+import (
+    "log/slog"
+
+    "github.com/renard/cwlog/fclog"
+    "github.com/renard/cwlog/logger"
+    "github.com/renard/cwlog/sloglog"
+)
+
+func main() {
+    l, err := fclog.New(fclog.Options{
+        ConsoleLevel: logger.WarnLevel,
+        FileLevel:    logger.DebugLevel,
+        FilePath:     "/var/log/myapp.log",
+    })
+    if err != nil {
+        l = logger.Null()
+    }
+
+    // All calls to slog.Info/Warn/Error/… are now routed through l.
+    slog.SetDefault(slog.New(sloglog.NewHandler(l)))
+}
+```
+
+#### Inject into a library that accepts a \*slog.Logger
+
+```go
+import "github.com/some/library"
+
+sl := slog.New(sloglog.NewHandler(l))
+library.New(library.Options{Logger: sl})
+```
+
+#### Structured attributes
+
+When the underlying cwlog backend implements `logger.StructuredLogger`
+(e.g. the zerolog or fclog backends), attributes passed via
+`slog.Logger.With` or inline to a log call are forwarded as key-value
+fields rather than being appended to the message string:
+
+```go
+sl := slog.New(sloglog.NewHandler(l))
+sl.With("component", "cache").Warn("eviction", "key", "user:42")
+// zerolog output: {"level":"warn","component":"cache","key":"user:42","message":"eviction"}
+```
+
+With a plain `logger.Logger`, the same call produces:
+```
+[WARN]  eviction component=cache key=user:42
+```
+
+#### Level mapping
+
+| slog level | cwlog level |
+|------------|-------------|
+| `>= LevelError` | `ErrorLevel` |
+| `>= LevelWarn` | `WarnLevel` |
+| `>= LevelInfo` | `InfoLevel` |
+| `>= LevelDebug` | `DebugLevel` |
+| `< LevelDebug` | `TraceLevel` |
+
+Custom intermediate slog levels (e.g. `slog.LevelInfo+2`) are mapped
+to the nearest lower standard tier. Sub-debug levels map to `TraceLevel`.
+
+### 6. fclog — file and console with independent levels and rotation
 
 `fclog` is a self-contained backend that writes to stderr, a file, or
 both. Everything is configured through a single `Options` struct. Set a
@@ -235,8 +310,8 @@ l, err := fclog.New(fclog.Options{
 cwlog/
 ├── logger/        interface, Disabled, Null, Std — no external deps
 ├── log.go         zerolog console logger (stderr only)
-└── fclog/
-    └── log.go     zerolog file + console logger with optional rotation
+├── fclog/         zerolog file + console logger with optional rotation
+└── sloglog/       slog.Handler adapter — routes slog output to any Logger
 ```
 
 ## Implementing a custom backend
